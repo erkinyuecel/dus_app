@@ -1,10 +1,18 @@
 import { createContext, useEffect, useState } from 'react';
-import { User } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
 import { UserProfile } from '../types';
+import {
+  LocalAuthUser,
+  createLocalAccount,
+  createLocalUserProfile,
+  getProfileById,
+  getSessionUserId,
+  setSessionUserId,
+  signInLocalAccount,
+  upsertProfile,
+} from '../lib/localStore';
 
 interface AuthContextType {
-  user: User | null;
+  user: LocalAuthUser | null;
   profile: UserProfile | null;
   loading: boolean;
   signUp: (email: string, password: string, fullName: string) => Promise<void>;
@@ -16,99 +24,76 @@ interface AuthContextType {
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<LocalAuthUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        fetchProfile(session.user.id);
-      } else {
-        setLoading(false);
-      }
-    });
+    const sessionUserId = getSessionUserId();
+    if (!sessionUserId) {
+      setLoading(false);
+      return;
+    }
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      (async () => {
-        setUser(session?.user ?? null);
-        if (session?.user) {
-          await fetchProfile(session.user.id);
-        } else {
-          setProfile(null);
-          setLoading(false);
-        }
-      })();
-    });
+    const existingProfile = getProfileById(sessionUserId);
+    if (!existingProfile) {
+      setSessionUserId(null);
+      setLoading(false);
+      return;
+    }
 
-    return () => subscription.unsubscribe();
+    setUser({ id: existingProfile.id, email: `${existingProfile.id}@local.user` });
+    setProfile(existingProfile);
+    setLoading(false);
   }, []);
 
   const fetchProfile = async (userId: string) => {
-    try {
-      const { data, error } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('id', userId)
-        .maybeSingle();
-
-      if (error) throw error;
-      setProfile(data);
-    } catch (error) {
-      console.error('Error fetching profile:', error);
-    } finally {
-      setLoading(false);
-    }
+    const existingProfile = getProfileById(userId);
+    setProfile(existingProfile);
+    setLoading(false);
   };
 
   const signUp = async (email: string, password: string, fullName: string) => {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-    });
-
-    if (error) throw error;
-    if (data.user) {
-      const { error: profileError } = await supabase
-        .from('user_profiles')
-        .insert([
-          {
-            id: data.user.id,
-            full_name: fullName,
-            language: 'en',
-            target_department: null,
-            target_base_score: null,
-          },
-        ]);
-
-      if (profileError) throw profileError;
-    }
+    const createdUser = createLocalAccount(email, password);
+    const createdProfile = createLocalUserProfile(createdUser, fullName);
+    upsertProfile(createdProfile);
+    setSessionUserId(createdUser.id);
+    setUser(createdUser);
+    setProfile(createdProfile);
   };
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const signedInUser = signInLocalAccount(email, password);
+    const signedInProfile = getProfileById(signedInUser.id);
 
-    if (error) throw error;
+    if (!signedInProfile) {
+      throw new Error('Kullanici profili bulunamadi.');
+    }
+
+    setSessionUserId(signedInUser.id);
+    setUser(signedInUser);
+    setProfile(signedInProfile);
   };
 
   const signOut = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) throw error;
+    setSessionUserId(null);
+    setUser(null);
+    setProfile(null);
   };
 
   const updateProfile = async (data: Partial<UserProfile>) => {
     if (!user) return;
 
-    const { error } = await supabase
-      .from('user_profiles')
-      .update({ ...data, updated_at: new Date().toISOString() })
-      .eq('id', user.id);
+    const existingProfile = getProfileById(user.id);
+    if (!existingProfile) {
+      throw new Error('Guncellenecek profil bulunamadi.');
+    }
 
-    if (error) throw error;
+    upsertProfile({
+      ...existingProfile,
+      ...data,
+      updated_at: new Date().toISOString(),
+    });
     await fetchProfile(user.id);
   };
 

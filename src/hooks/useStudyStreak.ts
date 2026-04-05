@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/useAuth';
+import { getStreaksByUser } from '../lib/localStore';
 
 export function useStudyStreak() {
   const { user } = useAuth();
@@ -11,11 +11,9 @@ export function useStudyStreak() {
     if (!user) return;
 
     try {
-      const { data } = await supabase
-        .from('study_streaks')
-        .select('study_date')
-        .eq('user_id', user.id)
-        .order('study_date', { ascending: false });
+      const data = getStreaksByUser(user.id)
+        .map((streak) => ({ study_date: streak.study_date }))
+        .sort((a, b) => b.study_date.localeCompare(a.study_date));
 
       if (!data || data.length === 0) {
         setCurrentStreak(0);

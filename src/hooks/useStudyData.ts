@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
 import {
   CategoryProgress,
   PracticeMode,
@@ -10,6 +9,12 @@ import {
 import { useAuth } from '../contexts/useAuth';
 import { ALL_RULES, KLINIK_BILIMLER_RULES, TEMEL_BILIMLER_RULES } from '../data/dusConfig';
 import { getUniqueCategories, QUESTION_BANK } from '../data/questionBank';
+import {
+  appendAnswer,
+  createUserAnswer,
+  getAnswersByUser,
+  incrementStreakForDate,
+} from '../lib/localStore';
 
 type LatestAnswerMap = Map<string, UserAnswer>;
 
@@ -115,13 +120,7 @@ export function useStudyData() {
 
     setLoading(true);
     try {
-      const { data: answersData } = await supabase
-        .from('user_answers')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('answered_at', { ascending: false });
-
-      const answers = answersData ?? [];
+      const answers = getAnswersByUser(user.id);
       setUserAnswers(answers);
       calculateCategoryProgress(QUESTION_BANK, answers);
     } catch (error) {
@@ -205,29 +204,7 @@ export function useStudyData() {
     if (!user) return;
 
     const today = new Date().toISOString().split('T')[0];
-
-    const { data: existingStreak } = await supabase
-      .from('study_streaks')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('study_date', today)
-      .maybeSingle();
-
-    if (existingStreak) {
-      await supabase
-        .from('study_streaks')
-        .update({ questions_answered: existingStreak.questions_answered + 1 })
-        .eq('id', existingStreak.id);
-      return;
-    }
-
-    await supabase.from('study_streaks').insert([
-      {
-        user_id: user.id,
-        study_date: today,
-        questions_answered: 1,
-      },
-    ]);
+    incrementStreakForDate(user.id, today);
   };
 
   const submitAnswer = async (
@@ -237,19 +214,17 @@ export function useStudyData() {
   ) => {
     if (!user) return;
 
-    const { error } = await supabase.from('user_answers').insert([
-      {
-        user_id: user.id,
-        question_id: questionId,
-        selected_answer: selectedAnswer,
-        is_correct: isCorrect,
-      },
-    ]);
+    appendAnswer(
+      createUserAnswer({
+        userId: user.id,
+        questionId,
+        selectedAnswer,
+        isCorrect,
+      })
+    );
 
-    if (!error) {
-      await updateStreakForToday();
-      await fetchData();
-    }
+    await updateStreakForToday();
+    await fetchData();
   };
 
   const refreshData = () => {
